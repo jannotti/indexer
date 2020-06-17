@@ -13,7 +13,7 @@ importer/protocols_json.go:	importer/protocols.json
 	cd importer && go generate
 
 mocks:	idb/dummy.go
-	cd idb && mockery -name=IndexerDb
+	cd idb && mockery --name=IndexerDb
 
 package: clean setup
 	misc/release.py --outdir $(PKG_DIR)

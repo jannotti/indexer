@@ -1,4 +1,6 @@
-@Library('make')_
+@Library("simple") _
 
-make(['package', 'test', 'test-package'])
+simple.make(["package"])
+//simple.test(["arm64v8"])
+simple.test(["amd64"])
 

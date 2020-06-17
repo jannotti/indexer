@@ -1,0 +1,33 @@
+tasks:
+- task: Echo
+  name: foo
+  message: foo
+
+- task: Echo
+  name: bar
+  message: bar
+
+- task: Echo
+  name: quux
+  message: quux
+
+- task: shell.Make
+  target: test
+
+jobs:
+  foo:
+    tasks:
+    - Echo.foo
+
+  bar:
+    tasks:
+    - Echo.bar
+
+  quux:
+    tasks:
+    - Echo.quux
+
+  test:
+    tasks:
+    - shell.Make
+
