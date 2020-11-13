@@ -26,8 +26,8 @@ func init() {
 		{m1fixupBlockTime, true, "Adjust block time to UTC timezone."},
 		{m2apps, true, "Update DB Schema for Algorand application support."},
 		{m3acfgFix, false, "Recompute asset configurations with corrected merge function."},
-		{m4cumulativeRewardsDBUpdate, true, "Update DB Schema for cumulative account reward support."},
-		{m5accountCumulativeRewardsUpdate, true, "Compute cumulative account rewards for all accounts."},
+		{m4CumulativeRewardsPart1, true, "Update DB Schema for cumulative account reward support."},
+		{m5CumulativeRewardsPart2, false, "Compute cumulative account rewards for all accounts."},
 	}
 }
 
@@ -43,6 +43,9 @@ type MigrationState struct {
 
 	// NextAccount used for m5 to checkpoint progress.
 	NextAccount []byte `json:"nextaccount,omitempty"`
+
+	// MaxRound used for m5 to filter out transactions which have already been handled.
+	MaxRound uint64
 
 	// Note: a generic "data" field here could be a good way to deal with this growing over time.
 	//       It would require a mechanism to clear the data field between migrations to avoid using migration data
@@ -268,10 +271,19 @@ func m3acfgFixAsyncInner(db *IndexerDb, state *MigrationState, assetIds []int64)
 	return -1, nil
 }
 
-// m4cumulativeRewardsDBUpdate adds the new rewardstotal column to the account table.
-func m4cumulativeRewardsDBUpdate(db *IndexerDb, state *MigrationState) error {
+// m4CumulativeRewardsPart1 adds the new rewardstotal column to the account table, caches max round.
+func m4CumulativeRewardsPart1(db *IndexerDb, state *MigrationState) error {
+	// Cache the latest round for part 2
+	var err error
+	state.MaxRound, err = db.GetMaxRound()
+	if err != nil {
+		return fmt.Errorf("problem caching last round: %v", err)
+	}
+	db.SetMetastate(migrationMetastateKey, string(json.Encode(state)))
+
 	sqlLines := []string{
 		`ALTER TABLE account ADD COLUMN rewardstotal bigint NOT NULL DEFAULT 0`,
+		`ALTER TABLE account ADD COLUMN lastclose bigint NOT NULL DEFAULT 0`,
 	}
 	return sqlMigration(db, state, sqlLines)
 }
@@ -299,10 +311,10 @@ func addrToPercent(addr string) float64 {
 	return float64(val) / (32 * 32 * 32) * 100
 }
 
-// m5accountCumulativeRewardsUpdate computes the cumulative rewards for each account one at a time. This is a BLOCKING
+// m5CumulativeRewardsPart2 computes the cumulative rewards for each account one at a time. This is a BLOCKING
 // migration because we don't want to handle the case where accounts are actively transacting while we fixup their
 // table.
-func m5accountCumulativeRewardsUpdate(db *IndexerDb, state *MigrationState) error {
+func m5CumulativeRewardsPart2(db *IndexerDb, state *MigrationState) error {
 	db.log.Println("account cumulative rewards migration starting")
 
 	options := idb.AccountQueryOptions{}
