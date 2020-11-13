@@ -366,7 +366,7 @@ func (db *IndexerDb) SetMetastate(key, jsonStrValue string) (err error) {
 // GetMaxRound is part of idb.IndexerDB
 func (db *IndexerDb) GetMaxRound() (round uint64, err error) {
 	round = 0
-	row := db.db.QueryRow(`SELECT max(round) FROM block_header`)
+	row := db.db.QueryRow(`SELECT coalesce(max(round),0) FROM block_header`)
 	err = row.Scan(&round)
 	return
 }
