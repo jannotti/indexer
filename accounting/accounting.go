@@ -123,9 +123,14 @@ func (accounting *State) updateAccountData(addr types.Address, key string, field
 }
 
 func (accounting *State) updateAsset(addr types.Address, assetID uint64, add, sub uint64) {
-	updatelist := accounting.AssetUpdates[addr]
-	for i, up := range updatelist {
+	updatelist := accounting.AssetUpdates[len(accounting.AssetUpdates)-1][addr]
+	for i := len(updatelist) - 1; i >= 0; i-- {
+		up := updatelist[i]
 		if up.AssetID == assetID {
+			// If the asset was closed before this transaction we need to split it up as a new record.
+			if up.Closed != nil {
+				break
+			}
 			if add != 0 {
 				var xa big.Int
 				xa.SetUint64(add)
@@ -152,7 +157,8 @@ func (accounting *State) updateAsset(addr types.Address, assetID uint64, add, su
 		xa.SetUint64(sub)
 		au.Delta.Sub(&au.Delta, &xa)
 	}
-	accounting.AssetUpdates[addr] = append(updatelist, au)
+	//accounting.AssetUpdates[addr] = append(updatelist, au)
+	accounting.AssetUpdates[len(accounting.AssetUpdates)-1][addr] = append(updatelist, au)
 }
 
 // TODO: Figure out if this is dead code. Delete if it is.
@@ -161,17 +167,42 @@ func (accounting *State) updateTxnAsset(round uint64, intra int, assetID uint64)
 }
 
 func (accounting *State) closeAsset(from types.Address, assetID uint64, to types.Address, round uint64, offset int) {
-	accounting.AssetCloses = append(
-		accounting.AssetCloses,
-		idb.AssetClose{
+	if round == 6674634 || round == 6674608 {
+		fmt.Println("We have arrived...")
+	}
+
+	updatelist := accounting.AssetUpdates[len(accounting.AssetUpdates)-1][from]
+
+	assetClose := &idb.AssetClose{
 			CloseTo:       to,
 			AssetID:       assetID,
 			Sender:        from,
 			DefaultFrozen: accounting.defaultFrozen[assetID],
 			Round:         round,
 			Offset:        uint64(offset),
-		},
-	)
+		}
+
+	empty := make(map[[32]byte][]idb.AssetUpdate)
+
+	// Update the final existing asset update if there is one
+	if len(updatelist) > 0 && updatelist[len(updatelist)-1].AssetID == assetID {
+		updatelist[len(updatelist)-1].Closed = assetClose
+		// add an empty subround for any subsequent updates.
+		accounting.AssetUpdates = append(accounting.AssetUpdates, empty)
+		//accounting.AssetUpdates[len(accounting.AssetUpdates)-1][from] = append(updatelist, empty)
+		return
+	}
+
+	// If there were no other updates to this asset holding, add the close entry
+	accounting.AssetUpdates[len(accounting.AssetUpdates)-1][from] = append(updatelist, idb.AssetUpdate{
+		AssetID:       assetID,
+		Delta:         *big.NewInt(0),
+		DefaultFrozen: assetClose.DefaultFrozen,
+		Closed:        assetClose,
+	})
+
+	// add an empty subround for any subsequent updates.
+	accounting.AssetUpdates = append(accounting.AssetUpdates, empty)
 }
 func (accounting *State) freezeAsset(addr types.Address, assetID uint64, frozen bool) {
 	accounting.FreezeUpdates = append(accounting.FreezeUpdates, idb.FreezeUpdate{Addr: addr, AssetID: assetID, Frozen: frozen})
@@ -308,6 +339,9 @@ func (accounting *State) AddTransaction(txnr *idb.TxnRow) (err error) {
 			}
 		}
 	case atypes.AssetTransferTx:
+		if round == 6674634 || round == 6674608 {
+			fmt.Println("We have arrived...")
+		}
 		sender := stxn.Txn.AssetSender // clawback
 		if sender.IsZero() {
 			sender = stxn.Txn.Sender

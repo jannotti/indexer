@@ -480,6 +480,7 @@ type AssetUpdate struct {
 	AssetID       uint64
 	Delta         big.Int
 	DefaultFrozen bool
+	Closed        *AssetClose
 }
 
 // FreezeUpdate is used by the accounting and IndexerDb implementations to share modifications in a block.
@@ -535,9 +536,20 @@ type RoundUpdates struct {
 
 	AcfgUpdates     []AcfgUpdate
 	TxnAssetUpdates []TxnAssetUpdate
-	AssetUpdates    map[[32]byte][]AssetUpdate
+
+	// AssetUpdates is more complicated than AlgoUpdates because there
+	// are no apply data values to work with in the event of a close.
+	// The way we handle this is by breaking the round into sub-rounds,
+	// which is represented by the overall slice.
+	// Updates should be processed one subround at a time, the updates
+	// within a subround can be processed in order for each addresses
+	// updates, which have already been grouped together in the event
+	// of multiple transactions between two accounts.
+	// The next subround starts when an account close has been detected
+	// Once a subround has been processed, move to the next subround and
+	// apply the updates.
+	AssetUpdates    []map[[32]byte][]AssetUpdate
 	FreezeUpdates   []FreezeUpdate
-	AssetCloses     []AssetClose
 	AssetDestroys   []uint64
 
 	AppGlobalDeltas []AppDelta
@@ -551,9 +563,9 @@ func (ru *RoundUpdates) Clear() {
 	ru.AccountDataUpdates = make(map[[32]byte]map[string]interface{})
 	ru.AcfgUpdates = nil
 	ru.TxnAssetUpdates = nil
-	ru.AssetUpdates = make(map[[32]byte][]AssetUpdate)
+	ru.AssetUpdates = nil
+	ru.AssetUpdates = append(ru.AssetUpdates, make(map[[32]byte][]AssetUpdate, 0))
 	ru.FreezeUpdates = nil
-	ru.AssetCloses = nil
 	ru.AssetDestroys = nil
 	ru.AppGlobalDeltas = nil
 	ru.AppLocalDeltas = nil
@@ -609,8 +621,32 @@ func (ru *RoundUpdates) Filter(filter UpdateFilter) RoundUpdates {
 	}
 	 */
 
-	if val, ok := ru.AssetUpdates[addrBytes]; ok {
-		response.AssetUpdates[addrBytes] = val
+	response.AssetUpdates = nil
+	for _, subround := range ru.AssetUpdates {
+		numCloses := 0
+		subroundMap := make(map[[32]byte][]AssetUpdate)
+		for auk, auList := range subround {
+			for _, au := range auList {
+				// If the update is for this asset, add all of them
+				if auk == addrBytes {
+					subroundMap[addrBytes] = append(subroundMap[addrBytes], au)
+					if au.Closed != nil {
+						numCloses++
+					}
+				} else if au.Closed != nil && au.Closed.CloseTo == addrBytes {
+					// Otherwise check all of them to see if we're named in the close-to and add that one.
+					subroundMap[addrBytes] = append(subroundMap[addrBytes], au)
+					numCloses++
+				}
+			}
+		}
+		if len(subroundMap) > 0 {
+			response.AssetUpdates = append(response.AssetUpdates, subroundMap)
+		}
+
+		if numCloses + 1 < len(ru.AssetUpdates) {
+			fmt.Println("MISSING A CLOSE BUT THIS IS EXPECTED.")
+		}
 	}
 
 	for _, update := range ru.FreezeUpdates {
@@ -619,11 +655,13 @@ func (ru *RoundUpdates) Filter(filter UpdateFilter) RoundUpdates {
 		}
 	}
 
+	/*
 	for _, update := range ru.AssetCloses {
 		if update.Sender == *filter.Address || update.CloseTo == *filter.Address {
 			response.AssetCloses = append(response.AssetCloses, update)
 		}
 	}
+	 */
 	/*
 	// Do not include asset configuration. Note: in the future that would be supported with an AssetID filter.
 	for _, update := range ru.AssetDestroys {

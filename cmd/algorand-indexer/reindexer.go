@@ -41,6 +41,7 @@ var reindexCmd = &cobra.Command{
 		limit := int(maxRounds)
 		filter := idb.UpdateFilter{
 			Address: &addr,
+			//StartRound: 6708401,
 			StartRound: 0,
 			RoundLimit: &limit,
 		}
