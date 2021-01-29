@@ -284,6 +284,93 @@ func UpdateAccounting(db idb.IndexerDb, filter idb.UpdateFilter, l *log.Logger) 
 	return updateAccounting(db, filter, l)
 }
 
+type changes struct {
+	changes map[uint64][]change
+	balance map[uint64]int64
+}
+
+type change struct {
+	delta int64
+	aca   int64
+	balance int64
+	close bool
+	round uint64
+}
+
+
+func sideCheck(updates idb.RoundUpdates, round uint64, filter idb.UpdateFilter, changes *changes) {
+	if round == 6674634 || round == 6674608 {
+		fmt.Println("We have arrived...")
+	}
+
+	var addrb [32] byte
+	copy(addrb[:], filter.Address[:])
+
+	for _, subround := range updates.AssetUpdates {
+		if vals, ok := subround[addrb]; ok {
+			for _, val := range vals {
+				if _, ok := changes.balance[val.AssetID]; !ok {
+					changes.balance[val.AssetID] = 0
+				}
+				changes.changes[val.AssetID] = append(changes.changes[val.AssetID], change{
+					delta:   val.Delta.Int64(),
+					round:   round,
+					balance: changes.balance[val.AssetID],
+				})
+				changes.balance[val.AssetID] = changes.balance[val.AssetID] + val.Delta.Int64()
+			}
+
+			// Check for close
+			// Note: this only tracks when the account is closed, not when something is closed into the account...
+			if len(vals) > 0 {
+				val := vals[len(vals)-1]
+				if val.Closed != nil && addrb == *filter.Address { //v[len(v)-1].Closed.Sender == *filter.Address {
+					if _, ok := changes.balance[val.AssetID]; !ok {
+						changes.balance[val.AssetID] = 0
+					}
+					changes.changes[val.AssetID] = append(changes.changes[val.AssetID], change{
+						close:   true,
+						delta:   changes.balance[val.AssetID] * -1,
+						aca:     changes.balance[val.AssetID],
+						round:   round,
+						balance: changes.balance[val.AssetID],
+					})
+					changes.balance[val.AssetID] = 0
+				}
+			}
+		}
+
+		/*
+			for _, val := range updates.AssetCloses {
+				if val.Sender == *filter.Address {
+					if _, ok := changes.balance[val.AssetID]; !ok {
+						changes.balance[val.AssetID] = 0
+					}
+					changes.changes[val.AssetID] = append(changes.changes[val.AssetID], change{
+						close:   true,
+						delta:   changes.balance[val.AssetID] * -1,
+						aca:     changes.balance[val.AssetID],
+						round:   round,
+						balance: changes.balance[val.AssetID],
+					})
+					changes.balance[val.AssetID] = 0
+				}
+			}
+		*/
+	}
+}
+
+func dumpChanges(changes *changes) {
+	for k, v := range changes.changes {
+		fmt.Printf("Asset #%d\n", k)
+		fmt.Printf("| %11s | %5s | %11s | %11s | %11s |\n", "round", "close", "balance", "delta", "aca")
+		fmt.Printf("| ----------- | ----- | ----------- | ----------- | ----------- |\n")
+		for _, change := range v {
+			fmt.Printf("| %11d | %5t | %11d | %11d | %11d |\n", change.round, change.close, change.balance, change.delta, change.aca)
+		}
+	}
+}
+
 func updateAccounting(db idb.IndexerDb, filter idb.UpdateFilter, l *log.Logger) (rounds, txnCount int) {
 	l.Infof("will start from round %d", filter.StartRound)
 
@@ -297,11 +384,17 @@ func updateAccounting(db idb.IndexerDb, filter idb.UpdateFilter, l *log.Logger) 
 	lastRoundsSeen := roundsSeen
 	txnForRound := 0
 	var blockPtr *types.Block = nil
+	var changes = &changes{
+		changes: make(map[uint64][]change),
+		balance: make(map[uint64]int64),
+	}
 	for txn := range txns {
 		maybeFail(txn.Error, l, "updateAccounting txn fetch, %v", txn.Error)
 		if txn.Round != currentRound {
 			// TODO: commit rounds with no transactions to avoid a special case to update the db metastate.
 			if blockPtr != nil && txnForRound > 0 {
+				sideCheck(act.RoundUpdates, currentRound, filter, changes)
+				//dumpChanges(changes)
 				err := db.CommitRoundAccounting(act.RoundUpdates.Filter(filter), currentRound, blockPtr.RewardsLevel)
 				maybeFail(err, l, "failed to commit round accounting")
 			}
@@ -325,11 +418,15 @@ func updateAccounting(db idb.IndexerDb, filter idb.UpdateFilter, l *log.Logger) 
 			// Log progress
 			now := time.Now()
 			dt := now.Sub(lastlog)
-			if dt > (5 * time.Second) {
+			//if dt > (5 * time.Second) {
 				drounds := roundsSeen - lastRoundsSeen
 				l.Infof("accounting through %d, %.1f/s", prevRound, ((float64(drounds) * float64(time.Second)) / float64(dt)))
 				lastlog = now
 				lastRoundsSeen = roundsSeen
+			//}
+
+			if currentRound == 6674634 || currentRound == 6674608 {
+				fmt.Println("We have arrived...")
 			}
 		}
 		err := act.AddTransaction(&txn)
@@ -341,9 +438,11 @@ func updateAccounting(db idb.IndexerDb, filter idb.UpdateFilter, l *log.Logger) 
 	// Commit the final round
 	// TODO: commit rounds with empty paysets to avoid a special case to update the db metastate.
 	if blockPtr != nil && txnForRound > 0 {
+		sideCheck(act.RoundUpdates, currentRound, filter, changes)
 		err := db.CommitRoundAccounting(act.RoundUpdates, currentRound, blockPtr.RewardsLevel)
 		maybeFail(err, l, "failed to commit round accounting")
 	}
+	dumpChanges(changes)
 
 	rounds += roundsSeen
 	if rounds > 0 {
