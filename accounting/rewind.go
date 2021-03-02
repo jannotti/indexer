@@ -2,6 +2,7 @@ package accounting
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 
 	"github.com/algorand/go-algorand-sdk/encoding/msgpack"
@@ -55,11 +56,12 @@ var specialAccounts *idb.SpecialAccounts
 
 // AccountAtRound queries the idb.IndexerDb object for transactions and rewinds most fields of the account back to
 // their values at the requested round.
-func AccountAtRound(account models.Account, round uint64, db idb.IndexerDb) (acct models.Account, err error) {
+func AccountAtRound(account models.Account, round uint64, db idb.IndexerDb,
+	ctx context.Context, tx *sql.Tx) (acct models.Account, err error) {
 	// Make sure special accounts cache has been initialized.
 	if specialAccounts == nil {
 		var accounts idb.SpecialAccounts
-		accounts, err = db.GetSpecialAccounts()
+		accounts, err = db.GetSpecialAccountsTx(ctx, tx)
 		if err != nil {
 			return models.Account{}, fmt.Errorf("unable to get special accounts: %v", err)
 		}
@@ -89,7 +91,7 @@ func AccountAtRound(account models.Account, round uint64, db idb.IndexerDb) (acc
 		MinRound: round + 1,
 		MaxRound: account.Round,
 	}
-	txns := db.Transactions(context.Background(), tf)
+	txns := db.TransactionsTx(ctx, tx, tf)
 	txcount := 0
 	for txnrow := range txns {
 		if txnrow.Error != nil {
@@ -163,7 +165,7 @@ func AccountAtRound(account models.Account, round uint64, db idb.IndexerDb) (acc
 		tf.MaxRound = round
 		tf.MinRound = 0
 		tf.Limit = 1
-		txns = db.Transactions(context.Background(), tf)
+		txns = db.TransactionsTx(ctx, tx, tf)
 		for txnrow := range txns {
 			if txnrow.Error != nil {
 				err = txnrow.Error
@@ -175,18 +177,18 @@ func AccountAtRound(account models.Account, round uint64, db idb.IndexerDb) (acc
 				return
 			}
 			var baseBlock types.Block
-			baseBlock, _, err = db.GetBlock(context.Background(), txnrow.Round, idb.GetBlockOptions{})
+			baseBlock, _, err = db.GetBlockTx(ctx, tx, txnrow.Round, idb.GetBlockOptions{})
 			if err != nil {
 				return
 			}
 			prevRewardsBase := baseBlock.RewardsLevel
 			var blockheader types.Block
-			blockheader, _, err = db.GetBlock(context.Background(), round, idb.GetBlockOptions{})
+			blockheader, _, err = db.GetBlockTx(ctx, tx, round, idb.GetBlockOptions{})
 			if err != nil {
 				return
 			}
 			var proto types.ConsensusParams
-			proto, err = db.GetProto(string(blockheader.CurrentProtocol))
+			proto, err = db.GetProtoTx(tx, string(blockheader.CurrentProtocol))
 			if err != nil {
 				return
 			}

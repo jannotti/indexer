@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -63,7 +64,7 @@ const defaultBalancesLimit = 1000
 func (si *ServerImplementation) MakeHealthCheck(ctx echo.Context) error {
 	var errors []string
 
-	health, err := si.db.Health()
+	health, err := si.db.Health(ctx.Request().Context())
 	if err != nil {
 		return indexerError(ctx, fmt.Sprintf("problem fetching health: %v", err))
 	}
@@ -94,8 +95,14 @@ func (si *ServerImplementation) LookupAccountByID(ctx echo.Context, accountID st
 		return badRequest(ctx, errors[0])
 	}
 
+	tx, err := si.db.MakeTx(ctx.Request().Context())
+	if err != nil {
+		return fmt.Errorf("MakeTx %v", err)
+	}
+	defer tx.Commit()
+
 	// Special accounts non handling
-	isSpecialAccount, err := si.isSpecialAccount(accountID)
+	isSpecialAccount, err := si.isSpecialAccount(ctx.Request().Context(), tx, accountID)
 	if err != nil {
 		return indexerError(ctx, fmt.Sprintf("%s: %v", errFailedLoadSpecialAccounts, err))
 	}
@@ -111,8 +118,7 @@ func (si *ServerImplementation) LookupAccountByID(ctx echo.Context, accountID st
 		Limit:                1,
 	}
 
-	accounts, err := si.fetchAccounts(ctx.Request().Context(), options, params.Round)
-
+	accounts, err := si.fetchAccounts(ctx.Request().Context(), tx, options, params.Round)
 	if err != nil {
 		return indexerError(ctx, fmt.Sprintf("%s: %v", errFailedSearchingAccount, err))
 	}
@@ -125,7 +131,7 @@ func (si *ServerImplementation) LookupAccountByID(ctx echo.Context, accountID st
 		return indexerError(ctx, fmt.Sprintf("%s: %s", errMultipleAccounts, accountID))
 	}
 
-	round, err := si.db.GetMaxRoundAccounted()
+	round, err := si.db.GetMaxRoundAccountedTx(tx)
 	if err != nil {
 		return indexerError(ctx, err.Error())
 	}
@@ -174,13 +180,18 @@ func (si *ServerImplementation) SearchForAccounts(ctx echo.Context, params gener
 		options.GreaterThanAddress = addr[:]
 	}
 
-	accounts, err := si.fetchAccounts(ctx.Request().Context(), options, params.Round)
+	tx, err := si.db.MakeTx(ctx.Request().Context())
+	if err != nil {
+		return fmt.Errorf("MakeTx %v", err)
+	}
+	defer tx.Commit()
 
+	accounts, err := si.fetchAccounts(ctx.Request().Context(), tx, options, params.Round)
 	if err != nil {
 		return indexerError(ctx, fmt.Sprintf("%s: %v", errFailedSearchingAccount, err))
 	}
 
-	round, err := si.db.GetMaxRoundAccounted()
+	round, err := si.db.GetMaxRoundAccountedTx(tx)
 	if err != nil {
 		return indexerError(ctx, err.Error())
 	}
@@ -237,8 +248,14 @@ func (si *ServerImplementation) LookupAccountTransactions(ctx echo.Context, acco
 // SearchForApplications returns applications for the provided parameters.
 // (GET /v2/applications)
 func (si *ServerImplementation) SearchForApplications(ctx echo.Context, params generated.SearchForApplicationsParams) error {
-	results := si.db.Applications(ctx.Request().Context(), &params)
-	round, err := si.db.GetMaxRoundAccounted()
+	tx, err := si.db.MakeTx(ctx.Request().Context())
+	if err != nil {
+		return fmt.Errorf("MakeTx %v", err)
+	}
+	defer tx.Commit()
+
+	results := si.db.ApplicationsTx(tx, &params)
+	round, err := si.db.GetMaxRoundAccountedTx(tx)
 	if err != nil {
 		return indexerError(ctx, err.Error())
 	}
@@ -266,10 +283,16 @@ func (si *ServerImplementation) SearchForApplications(ctx echo.Context, params g
 // LookupApplicationByID returns one application for the requested ID.
 // (GET /v2/applications/{application-id})
 func (si *ServerImplementation) LookupApplicationByID(ctx echo.Context, applicationID uint64) error {
+	tx, err := si.db.MakeTx(ctx.Request().Context())
+	if err != nil {
+		return fmt.Errorf("MakeTx %v", err)
+	}
+	defer tx.Commit()
+
 	var params generated.SearchForApplicationsParams
 	params.ApplicationId = &applicationID
-	results := si.db.Applications(ctx.Request().Context(), &params)
-	round, err := si.db.GetMaxRoundAccounted()
+	results := si.db.ApplicationsTx(tx, &params)
+	round, err := si.db.GetMaxRoundAccountedTx(tx)
 	if err != nil {
 		return indexerError(ctx, err.Error())
 	}
@@ -298,7 +321,13 @@ func (si *ServerImplementation) LookupAssetByID(ctx echo.Context, assetID uint64
 		return badRequest(ctx, err.Error())
 	}
 
-	assets, err := si.fetchAssets(ctx.Request().Context(), options)
+	tx, err := si.db.MakeTx(ctx.Request().Context())
+	if err != nil {
+		return fmt.Errorf("MakeTx %v", err)
+	}
+	defer tx.Commit()
+
+	assets, err := si.fetchAssets(ctx.Request().Context(), tx, options)
 	if err != nil {
 		return indexerError(ctx, err.Error())
 	}
@@ -311,7 +340,7 @@ func (si *ServerImplementation) LookupAssetByID(ctx echo.Context, assetID uint64
 		return indexerError(ctx, fmt.Sprintf("%s: %d", errMultipleAssets, assetID))
 	}
 
-	round, err := si.db.GetMaxRoundAccounted()
+	round, err := si.db.GetMaxRoundAccountedTx(tx)
 	if err != nil {
 		return indexerError(ctx, err.Error())
 	}
@@ -340,12 +369,18 @@ func (si *ServerImplementation) LookupAssetBalances(ctx echo.Context, assetID ui
 		query.PrevAddress = addr[:]
 	}
 
-	balances, err := si.fetchAssetBalances(ctx.Request().Context(), query)
+	tx, err := si.db.MakeTx(ctx.Request().Context())
+	if err != nil {
+		return fmt.Errorf("MakeTx %v", err)
+	}
+	defer tx.Commit()
+
+	balances, err := si.fetchAssetBalances(ctx.Request().Context(), tx, query)
 	if err != nil {
 		indexerError(ctx, err.Error())
 	}
 
-	round, err := si.db.GetMaxRoundAccounted()
+	round, err := si.db.GetMaxRoundAccountedTx(tx)
 	if err != nil {
 		return indexerError(ctx, err.Error())
 	}
@@ -398,12 +433,18 @@ func (si *ServerImplementation) SearchForAssets(ctx echo.Context, params generat
 		return badRequest(ctx, err.Error())
 	}
 
-	assets, err := si.fetchAssets(ctx.Request().Context(), options)
+	tx, err := si.db.MakeTx(ctx.Request().Context())
+	if err != nil {
+		return fmt.Errorf("MakeTx %v", err)
+	}
+	defer tx.Commit()
+
+	assets, err := si.fetchAssets(ctx.Request().Context(), tx, options)
 	if err != nil {
 		return indexerError(ctx, err.Error())
 	}
 
-	round, err := si.db.GetMaxRoundAccounted()
+	round, err := si.db.GetMaxRoundAccountedTx(tx)
 	if err != nil {
 		return indexerError(ctx, err.Error())
 	}
@@ -423,7 +464,13 @@ func (si *ServerImplementation) SearchForAssets(ctx echo.Context, params generat
 // LookupBlock returns the block for a given round number
 // (GET /v2/blocks/{round-number})
 func (si *ServerImplementation) LookupBlock(ctx echo.Context, roundNumber uint64) error {
-	blk, err := si.fetchBlock(ctx.Request().Context(), roundNumber)
+	tx, err := si.db.MakeTx(ctx.Request().Context())
+	if err != nil {
+		return fmt.Errorf("MakeTx %v", err)
+	}
+	defer tx.Commit()
+
+	blk, err := si.fetchBlock(ctx.Request().Context(), tx, roundNumber)
 	if err != nil {
 		return indexerError(ctx, err.Error())
 	}
@@ -440,8 +487,14 @@ func (si *ServerImplementation) LookupTransactions(ctx echo.Context, txid string
 		return badRequest(ctx, err.Error())
 	}
 
+	tx, err := si.db.MakeTx(ctx.Request().Context())
+	if err != nil {
+		return fmt.Errorf("MakeTx %v", err)
+	}
+	defer tx.Commit()
+
 	// Fetch the transactions
-	txns, _, err := si.fetchTransactions(ctx.Request().Context(), filter)
+	txns, _, err := si.fetchTransactions(ctx.Request().Context(), tx, filter)
 	if err != nil {
 		return indexerError(ctx, fmt.Sprintf("%s: %v", errTransactionSearch, err))
 	}
@@ -454,7 +507,7 @@ func (si *ServerImplementation) LookupTransactions(ctx echo.Context, txid string
 		return indexerError(ctx, fmt.Sprintf("%s: %s", errMultipleTransactions, txid))
 	}
 
-	round, err := si.db.GetMaxRoundAccounted()
+	round, err := si.db.GetMaxRoundAccountedTx(tx)
 	if err != nil {
 		return indexerError(ctx, err.Error())
 	}
@@ -475,13 +528,19 @@ func (si *ServerImplementation) SearchForTransactions(ctx echo.Context, params g
 		return badRequest(ctx, err.Error())
 	}
 
+	tx, err := si.db.MakeTx(ctx.Request().Context())
+	if err != nil {
+		return fmt.Errorf("MakeTx %v", err)
+	}
+	defer tx.Commit()
+
 	// Fetch the transactions
-	txns, next, err := si.fetchTransactions(ctx.Request().Context(), filter)
+	txns, next, err := si.fetchTransactions(ctx.Request().Context(), tx, filter)
 	if err != nil {
 		return indexerError(ctx, fmt.Sprintf("%s: %v", errTransactionSearch, err))
 	}
 
-	round, err := si.db.GetMaxRoundAccounted()
+	round, err := si.db.GetMaxRoundAccountedTx(tx)
 	if err != nil {
 		return indexerError(ctx, err.Error())
 	}
@@ -525,8 +584,9 @@ func notFound(ctx echo.Context, err string) error {
 ///////////////////////
 
 // fetchAssets fetches all results and converts them into generated.Asset objects
-func (si *ServerImplementation) fetchAssets(ctx context.Context, options idb.AssetsQuery) ([]generated.Asset, error) {
-	assetchan := si.db.Assets(ctx, options)
+func (si *ServerImplementation) fetchAssets(ctx context.Context, tx *sql.Tx,
+	options idb.AssetsQuery) ([]generated.Asset, error) {
+	assetchan := si.db.AssetsTx(ctx, tx, options)
 	assets := make([]generated.Asset, 0)
 	for row := range assetchan {
 		if row.Error != nil {
@@ -567,8 +627,9 @@ func (si *ServerImplementation) fetchAssets(ctx context.Context, options idb.Ass
 
 // fetchAssetBalances fetches all balances from a query and converts them into
 // generated.MiniAssetHolding objects
-func (si *ServerImplementation) fetchAssetBalances(ctx context.Context, options idb.AssetBalanceQuery) ([]generated.MiniAssetHolding, error) {
-	assetbalchan := si.db.AssetBalances(ctx, options)
+func (si *ServerImplementation) fetchAssetBalances(ctx context.Context, tx *sql.Tx,
+	options idb.AssetBalanceQuery) ([]generated.MiniAssetHolding, error) {
+	assetbalchan := si.db.AssetBalancesTx(ctx, tx, options)
 	balances := make([]generated.MiniAssetHolding, 0)
 	for row := range assetbalchan {
 		if row.Error != nil {
@@ -598,8 +659,10 @@ func (si *ServerImplementation) fetchAssetBalances(ctx context.Context, options 
 
 // fetchBlock looks up a block and converts it into a generated.Block object
 // the method also loads the transactions into the returned block object.
-func (si *ServerImplementation) fetchBlock(ctx context.Context, round uint64) (generated.Block, error) {
-	blk, transactions, err := si.db.GetBlock(ctx, round, idb.GetBlockOptions{Transactions: true})
+func (si *ServerImplementation) fetchBlock(ctx context.Context, tx *sql.Tx,
+	round uint64) (generated.Block, error) {
+	blk, transactions, err :=
+		si.db.GetBlockTx(ctx, tx, round, idb.GetBlockOptions{Transactions: true})
 
 	if err != nil {
 		return generated.Block{}, fmt.Errorf("%s '%d': %v", errLookingUpBlock, round, err)
@@ -659,8 +722,9 @@ func (si *ServerImplementation) fetchBlock(ctx context.Context, round uint64) (g
 
 // fetchAccounts queries for accounts and converts them into generated.Account
 // objects, optionally rewinding their value back to a particular round.
-func (si *ServerImplementation) fetchAccounts(ctx context.Context, options idb.AccountQueryOptions, atRound *uint64) ([]generated.Account, error) {
-	accountchan := si.db.GetAccounts(ctx, options)
+func (si *ServerImplementation) fetchAccounts(ctx context.Context, tx *sql.Tx,
+	options idb.AccountQueryOptions, atRound *uint64) ([]generated.Account, error) {
+	accountchan := si.db.GetAccountsTx(ctx, tx, options)
 
 	accounts := make([]generated.Account, 0)
 	for row := range accountchan {
@@ -669,7 +733,7 @@ func (si *ServerImplementation) fetchAccounts(ctx context.Context, options idb.A
 		}
 
 		// Check if it's a special account, if so, skip. We don't want it in our results.
-		isSpecialAccount, err := si.isSpecialAccount(row.Account.Address)
+		isSpecialAccount, err := si.isSpecialAccount(ctx, tx, row.Account.Address)
 		if err != nil {
 			return nil, err
 		}
@@ -681,7 +745,7 @@ func (si *ServerImplementation) fetchAccounts(ctx context.Context, options idb.A
 		// Compute for a given round if requested.
 		var account generated.Account
 		if atRound != nil {
-			acct, err := accounting.AccountAtRound(row.Account, *atRound, si.db)
+			acct, err := accounting.AccountAtRound(row.Account, *atRound, si.db, ctx, tx)
 			if err != nil {
 				// Ignore the error if this is an account search rewind error
 				_, isSpecialAccountRewindError := err.(*accounting.SpecialAccountRewindError)
@@ -706,9 +770,10 @@ func (si *ServerImplementation) fetchAccounts(ctx context.Context, options idb.A
 }
 
 // fetchTransactions is used to query the backend for transactions, and compute the next token
-func (si *ServerImplementation) fetchTransactions(ctx context.Context, filter idb.TransactionFilter) ([]generated.Transaction, string, error) {
+func (si *ServerImplementation) fetchTransactions(ctx context.Context, tx *sql.Tx,
+	filter idb.TransactionFilter) ([]generated.Transaction, string, error) {
 	results := make([]generated.Transaction, 0)
-	txchan := si.db.Transactions(ctx, filter)
+	txchan := si.db.TransactionsTx(ctx, tx, filter)
 	nextToken := ""
 	for txrow := range txchan {
 		tx, err := txnRowToTransaction(txrow)
@@ -742,9 +807,10 @@ func max(x, y uint64) uint64 {
 
 // isSpecialAccount returns true if addr belongs to a special account, false otherwise.
 // The function returns an error in case it fails to retrieve the special accounts list.
-func (si *ServerImplementation) isSpecialAccount(addr string) (bool, error) {
+func (si *ServerImplementation) isSpecialAccount(ctx context.Context, tx *sql.Tx,
+	addr string) (bool, error) {
 	// Special accounts non handling
-	sa, err := si.db.GetSpecialAccounts()
+	sa, err := si.db.GetSpecialAccountsTx(ctx, tx)
 	if err != nil {
 		return false, err
 	}

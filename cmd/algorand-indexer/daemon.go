@@ -124,7 +124,7 @@ func waitForDBAvailable(db idb.IndexerDb) {
 	nextStatusTime := time.Now()
 	for true {
 		now = time.Now()
-		health, err := db.Health()
+		health, err := db.Health(context.Background())
 		if err != nil {
 			logger.WithError(err).Errorf("Problem fetching database health.")
 			os.Exit(1)

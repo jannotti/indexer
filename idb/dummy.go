@@ -3,6 +3,7 @@ package idb
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/base32"
 	"encoding/base64"
 	"encoding/binary"
@@ -66,7 +67,7 @@ func (db *dummyIndexerDb) SetProto(version string, proto types.ConsensusParams) 
 }
 
 // GetProto is part of idb.IndexerDB
-func (db *dummyIndexerDb) GetProto(version string) (proto types.ConsensusParams, err error) {
+func (db *dummyIndexerDb) GetProtoTx(tx *sql.Tx, version string) (proto types.ConsensusParams, err error) {
 	err = nil
 	return
 }
@@ -82,7 +83,7 @@ func (db *dummyIndexerDb) SetImportState(is ImportState) (err error) {
 }
 
 // GetMaxRoundAccounted is part of idb.IndexerDB
-func (db *dummyIndexerDb) GetMaxRoundAccounted() (round uint64, err error) {
+func (db *dummyIndexerDb) GetMaxRoundAccountedTx(tx *sql.Tx) (round uint64, err error) {
 	return 0, nil
 }
 
@@ -92,7 +93,8 @@ func (db *dummyIndexerDb) GetMaxRoundLoaded() (round uint64, err error) {
 }
 
 // GetSpecialAccounts is part of idb.IndexerDb
-func (db *dummyIndexerDb) GetSpecialAccounts() (SpecialAccounts, error) {
+func (db *dummyIndexerDb) GetSpecialAccountsTx(ctx context.Context,
+	tx *sql.Tx) (SpecialAccounts, error) {
 	return SpecialAccounts{}, nil
 }
 
@@ -112,38 +114,54 @@ func (db *dummyIndexerDb) CommitRoundAccounting(updates RoundUpdates, round uint
 }
 
 // GetBlock is part of idb.IndexerDB
-func (db *dummyIndexerDb) GetBlock(ctx context.Context, round uint64, options GetBlockOptions) (block types.Block, transactions []TxnRow, err error) {
+func (db *dummyIndexerDb) GetBlockTx(ctx context.Context, tx *sql.Tx, round uint64,
+	options GetBlockOptions) (block types.Block, transactions []TxnRow, err error) {
+	return types.Block{}, nil, nil
+}
+
+// GetBlock is part of idb.IndexerDB
+func (db *dummyIndexerDb) GetBlock(ctx context.Context, round uint64,
+	options GetBlockOptions) (block types.Block, transactions []TxnRow, err error) {
 	return types.Block{}, nil, nil
 }
 
 // Transactions is part of idb.IndexerDB
-func (db *dummyIndexerDb) Transactions(ctx context.Context, tf TransactionFilter) <-chan TxnRow {
+func (db *dummyIndexerDb) TransactionsTx(ctx context.Context, tx *sql.Tx,
+	tf TransactionFilter) <-chan TxnRow {
 	return nil
 }
 
 // GetAccounts is part of idb.IndexerDB
-func (db *dummyIndexerDb) GetAccounts(ctx context.Context, opts AccountQueryOptions) <-chan AccountRow {
+func (db *dummyIndexerDb) GetAccountsTx(ctx context.Context, tx *sql.Tx,
+	opts AccountQueryOptions) <-chan AccountRow {
 	return nil
 }
 
 // Assets is part of idb.IndexerDB
-func (db *dummyIndexerDb) Assets(ctx context.Context, filter AssetsQuery) <-chan AssetRow {
+func (db *dummyIndexerDb) AssetsTx(ctx context.Context, tx *sql.Tx,
+	filter AssetsQuery) <-chan AssetRow {
 	return nil
 }
 
 // AssetBalances is part of idb.IndexerDB
-func (db *dummyIndexerDb) AssetBalances(ctx context.Context, abq AssetBalanceQuery) <-chan AssetBalanceRow {
+func (db *dummyIndexerDb) AssetBalancesTx(ctx context.Context, tx *sql.Tx,
+	abq AssetBalanceQuery) <-chan AssetBalanceRow {
 	return nil
 }
 
 // Applications is part of idb.IndexerDB
-func (db *dummyIndexerDb) Applications(ctx context.Context, filter *models.SearchForApplicationsParams) <-chan ApplicationRow {
+func (db *dummyIndexerDb) ApplicationsTx(tx *sql.Tx,
+	filter *models.SearchForApplicationsParams) <-chan ApplicationRow {
 	return nil
 }
 
 // Health is part of idb.IndexerDB
-func (db *dummyIndexerDb) Health() (state Health, err error) {
+func (db *dummyIndexerDb) Health(ctx context.Context) (state Health, err error) {
 	return Health{}, nil
+}
+
+func (db *dummyIndexerDb) MakeTx(ctx context.Context) (*sql.Tx, error) {
+	return &sql.Tx{}, nil
 }
 
 // IndexerFactory is used to install an IndexerDb implementation.
@@ -217,13 +235,13 @@ type IndexerDb interface {
 
 	LoadGenesis(genesis types.Genesis) (err error)
 	SetProto(version string, proto types.ConsensusParams) (err error)
-	GetProto(version string) (proto types.ConsensusParams, err error)
+	GetProtoTx(tx *sql.Tx, version string) (proto types.ConsensusParams, err error)
 
 	GetImportState() (is *ImportState, err error)
 	SetImportState(ImportState) (err error)
-	GetMaxRoundAccounted() (round uint64, err error)
+	GetMaxRoundAccountedTx(tx *sql.Tx) (round uint64, err error)
 	GetMaxRoundLoaded() (round uint64, err error)
-	GetSpecialAccounts() (SpecialAccounts, error)
+	GetSpecialAccountsTx(ctx context.Context, tx *sql.Tx) (SpecialAccounts, error)
 	GetDefaultFrozen() (defaultFrozen map[uint64]bool, err error)
 
 	// YieldTxns returns a channel that produces the whole transaction stream after some round forward
@@ -231,15 +249,20 @@ type IndexerDb interface {
 
 	CommitRoundAccounting(updates RoundUpdates, round uint64, blockPtr *types.Block) (err error)
 
-	GetBlock(ctx context.Context, round uint64, options GetBlockOptions) (block types.Block, transactions []TxnRow, err error)
+	GetBlock(ctx context.Context, round uint64,
+		options GetBlockOptions) (block types.Block, transactions []TxnRow, err error)
+	GetBlockTx(ctx context.Context, tx *sql.Tx, round uint64,
+		options GetBlockOptions) (block types.Block, transactions []TxnRow, err error)
 
-	Transactions(ctx context.Context, tf TransactionFilter) <-chan TxnRow
-	GetAccounts(ctx context.Context, opts AccountQueryOptions) <-chan AccountRow
-	Assets(ctx context.Context, filter AssetsQuery) <-chan AssetRow
-	AssetBalances(ctx context.Context, abq AssetBalanceQuery) <-chan AssetBalanceRow
-	Applications(ctx context.Context, filter *models.SearchForApplicationsParams) <-chan ApplicationRow
+	TransactionsTx(ctx context.Context, tx *sql.Tx, tf TransactionFilter) <-chan TxnRow
+	GetAccountsTx(ctx context.Context, tx *sql.Tx, opts AccountQueryOptions) <-chan AccountRow
+	AssetsTx(ctx context.Context, tx *sql.Tx, filter AssetsQuery) <-chan AssetRow
+	AssetBalancesTx(ctx context.Context, tx *sql.Tx, abq AssetBalanceQuery) <-chan AssetBalanceRow
+	ApplicationsTx(tx *sql.Tx, filter *models.SearchForApplicationsParams) <-chan ApplicationRow
 
-	Health() (status Health, err error)
+	Health(ctx context.Context) (status Health, err error)
+
+	MakeTx(ctx context.Context) (*sql.Tx, error)
 }
 
 // GetBlockOptions contains the options when requesting to load a block from the database.

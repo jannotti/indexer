@@ -149,8 +149,8 @@ func (db *IndexerDb) markMigrationsAsDone() (err error) {
 	return db.setMetastate(migrationMetastateKey, migrationStateJSON)
 }
 
-func (db *IndexerDb) getMigrationState() (*MigrationState, error) {
-	migrationStateJSON, err := db.getMetastate(migrationMetastateKey)
+func (db *IndexerDb) getMigrationState(tx *sql.Tx) (*MigrationState, error) {
+	migrationStateJSON, err := db.getMetastate(tx, migrationMetastateKey)
 	if err == sql.ErrNoRows {
 		// no previous state, ok
 		return nil, nil
@@ -170,7 +170,7 @@ var hasRewardsSupport = false
 var lastCheckTs time.Time
 
 // hasTotalRewardsSupport helps check the migration state for whether or not rewards are supported.
-func (db *IndexerDb) hasTotalRewardsSupport() bool {
+func (db *IndexerDb) hasTotalRewardsSupport(tx *sql.Tx) bool {
 	// It will never revert back to false, so return it if cached true.
 	if hasRewardsSupport {
 		return hasRewardsSupport
@@ -187,7 +187,7 @@ func (db *IndexerDb) hasTotalRewardsSupport() bool {
 		// Set this unconditionally, if there's a failure lets not spam the DB.
 		lastCheckTs = time.Now()
 
-		state, err := db.getMigrationState()
+		state, err := db.getMigrationState(tx)
 		if err != nil || state == nil {
 			hasRewardsSupport = false
 			return hasRewardsSupport
@@ -202,8 +202,8 @@ func (db *IndexerDb) hasTotalRewardsSupport() bool {
 }
 
 // processAccount is a helper to modify accounts based on migration state.
-func (db *IndexerDb) processAccount(account *generated.Account) {
-	if !db.hasTotalRewardsSupport() {
+func (db *IndexerDb) processAccount(tx *sql.Tx, account *generated.Account) {
+	if !db.hasTotalRewardsSupport(tx) {
 		account.Rewards = 0
 	}
 }
@@ -358,7 +358,7 @@ func m3acfgFixAsyncInner(db *IndexerDb, state *MigrationState, assetIds []int64)
 // m5RewardsAndDatesPart1 adds the new rewards_total column to the account table.
 func m5RewardsAndDatesPart1(db *IndexerDb, state *MigrationState) error {
 	// Cache the round in the migration metastate
-	round, err := db.GetMaxRoundAccounted()
+	round, err := db.getMaxRoundAccounted()
 	if err != nil {
 		db.log.WithError(err).Errorf("%s: problem caching max round: %v", rewardsCreateCloseUpdateErr, err)
 		return err
@@ -423,7 +423,7 @@ func m6RewardsAndDatesPart2(db *IndexerDb, state *MigrationState) error {
 	var feeSinkAddr string
 	var rewardsAddr string
 	{
-		accounts, err := db.GetSpecialAccounts()
+		accounts, err := db.getSpecialAccounts()
 		if err != nil {
 			return fmt.Errorf("unable to get special accounts: %v", err)
 		}
@@ -439,7 +439,7 @@ func m6RewardsAndDatesPart2(db *IndexerDb, state *MigrationState) error {
 		options.GreaterThanAddress = state.NextAccount[:]
 	}
 
-	accountChan := db.GetAccounts(context.Background(), options)
+	accountChan := db.getAccounts(options)
 
 	batchSize := 500
 	batchNumber := 1
@@ -578,7 +578,7 @@ func initM5AccountData() *m5AccountData {
 func processAccountTransactionsWithRetry(db *IndexerDb, addressStr string, address types.Address, nextRound uint64, retries int) (results *m5AccountData, err error) {
 	for i := 0; i < retries; i++ {
 		// Query transactions for the account
-		txnrows := db.Transactions(context.Background(), idb.TransactionFilter{
+		txnrows := db.transactions(idb.TransactionFilter{
 			Address:  address[:],
 			MaxRound: nextRound,
 		})
@@ -1029,7 +1029,7 @@ func (mtxid *txidFiuxpMigrationContext) putTxidFixupBatch(batch []idb.TxnRow) er
 	}
 	defer tx.Rollback() // ignored if .Commit() first
 	// Check that migration state in db is still what we think it is
-	txstate, err := db.getMigrationState()
+	txstate, err := db.getMigrationState(tx)
 	if err != nil {
 		db.log.WithError(err).Errorf("%s, get m state err", txidMigrationErrMsg)
 		return err
